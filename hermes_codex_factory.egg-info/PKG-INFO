@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: hermes-codex-factory
+Version: 0.1.0
+Summary: Brokered, Hermes-supervised Codex software factory
+Requires-Python: >=3.12
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.30
+Requires-Dist: pydantic<3,>=2.8
+Requires-Dist: sqlalchemy<3,>=2.0
+Requires-Dist: psycopg[binary]<4,>=3.2
+Requires-Dist: docker<8,>=7
+Requires-Dist: httpx<1,>=0.27
+Requires-Dist: mcp<2,>=1.26
+Requires-Dist: PyYAML<7,>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: pytest-cov<7,>=5; extra == "dev"

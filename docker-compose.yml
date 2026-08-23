@@ -1,0 +1,133 @@
+name: hermes-codex-factory
+
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: docker/hermes.Dockerfile
+      args:
+        HERMES_UPSTREAM_IMAGE: ${HERMES_UPSTREAM_IMAGE:-nousresearch/hermes-agent@sha256:0c718ed0e390a9b4d87dc7f1bcc5c6314920d9d380699346d3887c8a1de50e95}
+    image: hermes-factory:fd760435
+    restart: unless-stopped
+    environment:
+      HERMES_HOME: /opt/data
+      FACTORY_API_KEY: ${FACTORY_API_KEY:?set FACTORY_API_KEY in .env}
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+    volumes:
+      - ${HERMES_DATA:-./factory-data/hermes}:/opt/data
+      - ./hermes:/factory-context:ro
+      - ${PROJECTS_ROOT:?set PROJECTS_ROOT in .env}:/repositories:ro
+    depends_on:
+      factory-executor:
+        condition: service_healthy
+    ports:
+      - "${HERMES_DASHBOARD_PORT:-127.0.0.1:9119}:9119"
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:9119/api/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+    security_opt: ["no-new-privileges:true"]
+
+  hermes-gateway:
+    image: hermes-factory:fd760435
+    restart: unless-stopped
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      FACTORY_API_KEY: ${FACTORY_API_KEY:?set FACTORY_API_KEY in .env}
+      FACTORY_WEBHOOK_ENABLED: "true"
+      WEBHOOK_ENABLED: "true"
+      WEBHOOK_PORT: "8644"
+      WEBHOOK_SECRET: ${FACTORY_WEBHOOK_SECRET:?set FACTORY_WEBHOOK_SECRET in .env}
+      FACTORY_NOTIFICATION_DELIVER: ${FACTORY_NOTIFICATION_DELIVER:-log}
+      FACTORY_NOTIFICATION_CHAT_ID: ${FACTORY_NOTIFICATION_CHAT_ID:-}
+    volumes:
+      - ${HERMES_DATA:-./factory-data/hermes}:/opt/data
+      - ./hermes:/factory-context:ro
+    command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8644/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+  factory-executor:
+    build:
+      context: .
+      dockerfile: docker/executor.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://factory:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/factory
+      FACTORY_API_KEY: ${FACTORY_API_KEY:?set FACTORY_API_KEY in .env}
+      MAX_WORKERS: ${MAX_WORKERS:-3}
+      FACTORY_DISPATCH_ENABLED: ${FACTORY_DISPATCH_ENABLED:-false}
+      WORKER_MONITOR_SECONDS: ${WORKER_MONITOR_SECONDS:-5}
+      PROJECTS_ROOT: /repositories
+      HOST_PROJECTS_ROOT: ${HOST_PROJECTS_ROOT:?set HOST_PROJECTS_ROOT in .env}
+      WORKSPACES_ROOT: /factory-workspaces
+      HOST_WORKSPACES_ROOT: ${HOST_WORKSPACES_ROOT:?set HOST_WORKSPACES_ROOT in .env}
+      CODEX_AUTH_ROOT: /codex-auth
+      CODEX_AUTH_VOLUME: ${CODEX_AUTH_VOLUME:-codex-auth}
+      CODEX_WORKER_IMAGE: hermes-codex-worker:local
+      QUALITY_RUNNER_IMAGE: hermes-quality-runner:local
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      FACTORY_MODEL_ROUTING_PATH: /factory-policy/model-routing.json
+      HERMES_FACTORY_WEBHOOK_URL: http://hermes-gateway:8644/webhooks/factory-notifications
+      HERMES_FACTORY_WEBHOOK_SECRET: ${FACTORY_WEBHOOK_SECRET:?set FACTORY_WEBHOOK_SECRET in .env}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PROJECTS_ROOT:?set PROJECTS_ROOT in .env}:/repositories:rw
+      - ${FACTORY_WORKSPACES:-./factory-workspaces}:/factory-workspaces:rw
+      # `codex-auth` is the Compose volume key. Its external Docker-volume
+      # name is selected below via CODEX_AUTH_VOLUME (e.g. codex-auth-pka).
+      - codex-auth:/codex-auth:ro
+      - ./factory_policy:/factory-policy:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: ["factory-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory -d factory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+
+  worker-image:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    image: hermes-codex-worker:local
+    profiles: ["build"]
+
+  quality-image:
+    build:
+      context: .
+      dockerfile: docker/quality.Dockerfile
+    image: hermes-quality-runner:local
+    profiles: ["build"]
+
+volumes:
+  factory-postgres:
+  codex-auth:
+    external: true
+    name: ${CODEX_AUTH_VOLUME:-codex-auth}

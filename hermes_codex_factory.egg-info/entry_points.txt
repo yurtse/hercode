@@ -1,0 +1,2 @@
+[console_scripts]
+factory-executor = factory_executor.app:main

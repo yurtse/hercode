@@ -1,0 +1,8 @@
+{
+  "factory-executor": {
+    "transport": "http",
+    "url": "http://factory-executor:8080/mcp/",
+    "headers": {"X-Factory-Key": "${FACTORY_API_KEY}"},
+    "note": "Installed automatically into Hermes config.yaml. The broker is not exposed on a host port."
+  }
+}
