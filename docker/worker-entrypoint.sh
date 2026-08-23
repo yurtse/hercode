@@ -3,7 +3,7 @@ set -eu
 
 : "${TASK_CONTRACT_PATH:=/task/.factory/contract.json}"
 : "${TASK_RESULT_PATH:=/task/.factory/result.json}"
-mkdir -p /state/codex /task/.factory
+mkdir -p /state/codex /state/uv-cache /state/uv-python /state/project-venv /state/cache /state/data /task/.factory
 # Authentication data is copied into a per-task home. The source mount is
 # read-only and no task shares this writable directory.
 if [ -d /codex-auth ]; then
@@ -21,7 +21,7 @@ cat > "$schema" <<'JSON'
 {"type":"object","additionalProperties":false,"properties":{"outcome":{"type":"string","enum":["completed","blocked","failed"]},"summary":{"type":"string"},"changes_made":{"type":"boolean"},"acceptance_evidence":{"type":"array","items":{"type":"string"}},"tests":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"command":{"type":["string","null"]},"name":{"type":["string","null"]},"status":{"type":["string","null"]},"passed":{"type":["boolean","null"]},"output":{"type":["string","null"]},"details":{"type":["string","null"]}},"required":["command","name","status","passed","output","details"]}},"blocking_reason":{"type":["string","null"]}},"required":["outcome","summary","changes_made","acceptance_evidence","tests","blocking_reason"]}
 JSON
 
-prompt="You are a bounded Codex factory worker. Read this task contract, work only in /task and only on allowed_paths, preserve existing work, and run relevant checks. Do not access credentials or modify factory policy. Do not run git commit, git push, or alter Git configuration: the isolated worker cannot access shared Git metadata, and the executor will validate and create the task commit after successful gates. Your final response must match the supplied schema. Contract:\n$(cat "$TASK_CONTRACT_PATH")"
+prompt="You are a bounded Codex factory worker. Read this task contract, work only in /task and only on allowed_paths, preserve existing work, and run relevant checks. Python 3.13 and uv are already installed. Use the provided UV_CACHE_DIR, UV_PYTHON_INSTALL_DIR, and UV_PROJECT_ENVIRONMENT under /state. Never create .venv, Python installations, dependency caches, or tool environments under /task, and never run concurrent package-manager commands. Do not access credentials or modify factory policy. Do not run git commit, git push, or alter Git configuration: the isolated worker cannot access shared Git metadata, and the executor will validate and create the task commit after successful gates. Your final response must match the supplied schema. Contract:\n$(cat "$TASK_CONTRACT_PATH")"
 route="$(python3 - "$TASK_CONTRACT_PATH" <<'PY'
 import json
 import sys

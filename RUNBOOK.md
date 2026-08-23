@@ -158,6 +158,12 @@ Python project, use `kind: python-uv`, pin `python_version`, and commit both
 only when its exclusive `allowed_paths` include both; later tasks use
 `bootstrap_allowed: false`.
 
+The Codex worker image provides Python 3.13 and keeps uv caches, managed Python
+state, and its disposable environment under `/state`. Workers must not create
+`.venv`, Python installations, or dependency caches in the task worktree. The
+executor enforces each worker's approved timeout. Deterministic gate failures
+retain their full command output in task evidence for recovery diagnosis.
+
 ### Ask Hermes to plan
 
 Use dashboard **Chat**. Example:

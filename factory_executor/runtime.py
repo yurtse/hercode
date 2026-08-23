@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import docker
+from requests.exceptions import ReadTimeout
 
 from .contracts import RuntimeContract, TaskContract
 from .executor_types import ExecutionError
@@ -62,7 +63,19 @@ class QualityRuntime:
             labels={"factory.run": run_id, "factory.task": task_id, "factory.component": "quality"},
         )
         try:
-            status = container.wait(timeout=900)
+            try:
+                status = container.wait(timeout=900)
+            except (ReadTimeout, TimeoutError) as exc:
+                try:
+                    container.kill()
+                except docker.errors.DockerException:
+                    pass
+                output = container.logs(stdout=True, stderr=True).decode("utf-8", "replace")[-8000:]
+                return {
+                    "returncode": 124,
+                    "output": f"quality container timed out after 900 seconds\n{output}",
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                }
             output = container.logs(stdout=True, stderr=True).decode("utf-8", "replace")[-8000:]
             return {
                 "returncode": int(status.get("StatusCode", 1)),

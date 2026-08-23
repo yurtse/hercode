@@ -9,6 +9,7 @@ import pytest
 from factory_executor.contracts import TaskStatus
 from factory_executor.contracts import WorkerResult
 from factory_executor.executor import ExecutionError, WorkerExecutor
+from factory_executor.executor_types import QualityGateError
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -257,3 +258,86 @@ def test_reconcile_keeps_composition_and_gate_evidence(tmp_path: Path) -> None:
         composition,
         {"command": "pytest -q", "returncode": 0},
     ]
+
+
+def test_reconcile_enforces_worker_timeout() -> None:
+    store = _Store({})
+    executor = object.__new__(WorkerExecutor)
+    executor.store = store
+    killed = []
+    container = SimpleNamespace(
+        status="running",
+        attrs={"State": {"StartedAt": "2000-01-01T00:00:00Z", "ExitCode": 0}},
+        reload=lambda: None,
+        kill=lambda: killed.append(True),
+        logs=lambda stdout, stderr: b"worker still running",
+    )
+    executor.client = SimpleNamespace(
+        containers=SimpleNamespace(get=lambda container_id: container)
+    )
+    task = SimpleNamespace(
+        id="timed-worker",
+        run_id="run-12345678",
+        container_id="container-1",
+        evidence=[],
+        contract={
+            "id": "timed-worker",
+            "title": "Timed worker",
+            "role": "backend",
+            "objective": "Execute a bounded task within its approved timeout.",
+            "acceptance_criteria": ["The task respects its timeout."],
+            "allowed_paths": ["src/"],
+            "limits": {"timeout_seconds": 60},
+        },
+    )
+
+    result = executor.reconcile(task)
+
+    assert result["state"] == "failed"
+    assert killed == [True]
+    assert store.transitions[-1][1] == TaskStatus.FAILED
+    assert "exceeded timeout" in store.transitions[-1][2]["result"]["error"]
+
+
+def test_reconcile_persists_failed_quality_gate_evidence() -> None:
+    store = _Store({})
+    executor = object.__new__(WorkerExecutor)
+    executor.store = store
+    container = SimpleNamespace(
+        status="exited",
+        attrs={"State": {"ExitCode": 0}},
+        reload=lambda: None,
+        logs=lambda stdout, stderr: b"worker complete",
+    )
+    executor.client = SimpleNamespace(
+        containers=SimpleNamespace(get=lambda container_id: container)
+    )
+    worker_result = WorkerResult(
+        outcome="completed",
+        summary="Implemented the bounded task.",
+        changes_made=True,
+        acceptance_evidence=["Worker check passed"],
+        tests=[],
+        blocking_reason=None,
+    )
+    failed_gate = {
+        "command": "ruff format --check .",
+        "returncode": 1,
+        "output": "README.md is not UTF-8",
+    }
+    executor.collect = lambda task: worker_result
+    executor.quality_gates = lambda task: (_ for _ in ()).throw(
+        QualityGateError("quality gate failed: ruff format --check .", [failed_gate])
+    )
+    task = SimpleNamespace(
+        id="failed-gate",
+        run_id="run-12345678",
+        container_id="container-1",
+        evidence=[{"kind": "dependency_composition"}],
+        contract={"read_only": False},
+    )
+
+    result = executor.reconcile(task)
+
+    assert result["state"] == "failed"
+    assert store.transitions[-1][2]["evidence"][-1] == failed_gate

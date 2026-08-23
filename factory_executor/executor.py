@@ -4,13 +4,14 @@ import json
 import os
 import stat
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
 
 from .compose_guard import COMPOSE_COMMAND_PREFIX, HEALTH_COMMAND_PREFIX, ComposeGuard
 from .contracts import TaskContract, TaskStatus, WorkerResult
-from .executor_types import ExecutionError
+from .executor_types import ExecutionError, QualityGateError
 from .runtime import QualityRuntime
 from .store import Store, Task
 
@@ -281,7 +282,7 @@ class WorkerExecutor:
         prepared = runtime.prepare(task.id, task.run_id, workspace, runtime_contract)
         evidence.append({"command": "runtime: uv sync --frozen", **prepared})
         if prepared["returncode"]:
-            raise ExecutionError("locked project runtime preparation failed")
+            raise QualityGateError("locked project runtime preparation failed", evidence)
 
         commands = task.contract.get("commands", [])
         compose_guard: ComposeGuard | None = None
@@ -298,7 +299,7 @@ class WorkerExecutor:
                     result = runtime.run_gate(task.id, task.run_id, workspace, command)
                 evidence.append({"command": command, **result})
                 if result["returncode"]:
-                    raise ExecutionError(f"quality gate failed: {command}")
+                    raise QualityGateError(f"quality gate failed: {command}", evidence)
         finally:
             if compose_guard is not None and "docker compose down" not in commands:
                 cleanup = compose_guard.down()
@@ -384,6 +385,28 @@ class WorkerExecutor:
         container = self.client.containers.get(task.container_id)
         container.reload()
         if container.status == "running":
+            contract = TaskContract.model_validate(task.contract)
+            started_text = container.attrs.get("State", {}).get("StartedAt", "")
+            try:
+                started = datetime.fromisoformat(started_text.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                raise ExecutionError("worker container has malformed start-time evidence")
+            elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+            if elapsed > contract.limits.timeout_seconds:
+                try:
+                    container.kill()
+                except docker.errors.DockerException:
+                    pass
+                logs = container.logs(stdout=True, stderr=True).decode("utf-8", "replace")[-8000:]
+                self.store.transition_task(
+                    task.id,
+                    TaskStatus.FAILED,
+                    result={
+                        "error": f"worker exceeded timeout of {contract.limits.timeout_seconds} seconds",
+                        "logs": logs,
+                    },
+                )
+                return {"task_id": task.id, "state": "failed"}
             return {"task_id": task.id, "state": "running"}
         logs = container.logs(stdout=True, stderr=True).decode("utf-8", "replace")[-8000:]
         if container.attrs["State"].get("ExitCode") != 0:
@@ -400,6 +423,15 @@ class WorkerExecutor:
             payload = result.model_dump(mode="json") | {"commit": commit, "pull_request": pr_url}
             self.store.transition_task(task.id, TaskStatus.SUCCEEDED, result=payload, evidence=evidence)
             return {"task_id": task.id, "state": "succeeded", "pull_request": pr_url}
+        except QualityGateError as exc:
+            evidence = [*(task.evidence or []), *exc.evidence]
+            self.store.transition_task(
+                task.id,
+                TaskStatus.FAILED,
+                result={"error": str(exc), "worker": result.model_dump(mode="json")},
+                evidence=evidence,
+            )
+            return {"task_id": task.id, "state": "failed"}
         except ExecutionError as exc:
             self.store.transition_task(task.id, TaskStatus.FAILED, result={"error": str(exc), "worker": result.model_dump(mode="json")})
             return {"task_id": task.id, "state": "failed"}
